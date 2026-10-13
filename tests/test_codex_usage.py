@@ -3,7 +3,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_usage import countdown, latest_usage, usage_from_file
+from codex_usage import (
+    all_usages,
+    compact_status,
+    countdown,
+    latest_usage,
+    project_summary,
+    render_overview,
+    session_state,
+    usage_from_file,
+)
 
 
 class UsageTests(unittest.TestCase):
@@ -66,6 +75,20 @@ class UsageTests(unittest.TestCase):
         self.file.write_text("not json\n")
         self.assertIsNone(usage_from_file(self.file))
 
+    def test_includes_new_session_before_first_token_event(self):
+        self.write_records([
+            {
+                "timestamp": "2026-10-11T09:00:00Z",
+                "type": "session_meta",
+                "payload": {"cwd": "/work/new-session"},
+            }
+        ])
+        usage = usage_from_file(self.file)
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage.project, "/work/new-session")
+        self.assertEqual(usage.total_tokens, 0)
+        self.assertIsNone(usage.context_used_percent)
+
     def test_finds_latest_session(self):
         self.write_records([])
         second = self.file.with_name("newer.jsonl")
@@ -84,6 +107,34 @@ class UsageTests(unittest.TestCase):
 
     def test_countdown(self):
         self.assertEqual(countdown(10_000, now=1_000), "2h 30m")
+
+    def test_lists_multiple_sessions_newest_first(self):
+        self.write_records([
+            {"type": "session_meta", "payload": {"cwd": "/work/old"}},
+            {"timestamp": "2026-10-11T09:00:00Z", "type": "event_msg", "payload": {"type": "token_count", "info": {}}},
+        ])
+        second = self.file.with_name("second.jsonl")
+        second.write_text(json.dumps({"timestamp": "2026-10-11T10:00:00Z", "type": "event_msg", "payload": {"type": "token_count", "info": {}}}) + "\n")
+        self.assertEqual([item.session_id for item in all_usages(self.root)], ["second", "rollout"])
+
+    def test_project_summary_aggregates_sessions(self):
+        self.write_records([
+            {"type": "session_meta", "payload": {"cwd": "/work/widget"}},
+            {"timestamp": "2026-10-11T09:00:00Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": 500}}}},
+        ])
+        items = project_summary(all_usages(self.root, limit=None))
+        self.assertEqual(items[0]["sessions"], 1)
+        self.assertEqual(items[0]["total_tokens"], 500)
+
+    def test_active_state_uses_file_update_time(self):
+        self.write_records([{"timestamp": "2026-10-11T09:00:00Z", "type": "event_msg", "payload": {"type": "token_count", "info": {}}}])
+        usage = usage_from_file(self.file)
+        self.assertEqual(session_state(usage, 15, now=usage.modified_at + 899), "active")
+        self.assertEqual(session_state(usage, 15, now=usage.modified_at + 901), "idle")
+        self.assertIn("Codex 1/1 active", compact_status([usage], active_within=15))
+        overview = render_overview([usage], active_within=15)
+        self.assertIn("1 active · 1 shown", overview)
+        self.assertIn("STATE", overview)
 
 
 if __name__ == "__main__":

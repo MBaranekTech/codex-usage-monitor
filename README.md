@@ -19,7 +19,7 @@ Track context pressure, five-hour and weekly usage limits, reset countdowns, and
 
 Long-running agentic coding sessions make it easy to lose track of context pressure or hit a usage window at the wrong moment. Codex Usage Monitor turns Codex's local session telemetry into a fast, human-friendly terminal dashboard—without an API key, cloud service, daemon, database, or extra package.
 
-- **Real-time AI observability** — live context and usage-window visibility
+- **Multi-session observability** — monitor every recent Codex session in one view
 - **Quota intelligence** — remaining five-hour and weekly capacity at a glance
 - **Reset forecasting** — countdowns show when each window renews
 - **Token analytics** — total, input, output, and cached token counters
@@ -44,7 +44,20 @@ Start the live dashboard:
 python3 codex_usage.py watch
 ```
 
-It refreshes every five seconds and rings the terminal bell when a usage window falls below 10% remaining.
+It refreshes every five seconds and rings the terminal bell when a usage window
+falls below 10% remaining. Live mode monitors the 10 newest sessions by default.
+
+Choose the compact overview when you want many sessions on one screen:
+
+```bash
+python3 codex_usage.py watch --layout overview
+```
+
+Or use the visual dashboard with colored progress bars for each session:
+
+```bash
+python3 codex_usage.py watch --layout detailed --limit 3
+```
 
 ## Commands
 
@@ -72,6 +85,19 @@ Customize the refresh interval and low-quota alert:
 python3 codex_usage.py watch --interval 2 --alert-below 15
 ```
 
+Both `show` and `watch` display the 10 newest sessions. Show every recorded
+session, or tune how recently a session must have changed to count as active.
+The default activity window is 60 minutes:
+
+```bash
+python3 codex_usage.py watch --limit 0
+python3 codex_usage.py watch --active-within 30
+```
+
+`ACTIVE` is based on recent session-file activity, not process detection. An open
+Codex session that has not produced an event within the selected window is shown
+as `IDLE`, but remains in the dashboard.
+
 ### JSON output
 
 ```bash
@@ -79,6 +105,22 @@ python3 codex_usage.py show --json
 ```
 
 Use JSON output with shell scripts, status bars, Grafana collectors, desktop widgets, or internal developer-experience tooling.
+
+### Project history and shell integrations
+
+Summarize all locally recorded sessions by project:
+
+```bash
+python3 codex_usage.py projects
+```
+
+For a shell prompt or tmux status bar, use the stable one-line form:
+
+```bash
+python3 codex_usage.py status
+# tmux.conf example:
+set -g status-right '#(python3 /path/to/codex_usage.py status)'
+```
 
 ### Custom Codex home
 
@@ -121,7 +163,9 @@ python3 codex_statusline.py uninstall
 
 ## How it works
 
-Codex records token-count events and rate-limit snapshots in local JSONL session files. The monitor finds the newest session, reads its latest usage event, and renders the data as a snapshot or continuously refreshing terminal UI.
+Codex records token-count events and rate-limit snapshots in local JSONL session files. The monitor finds recent sessions, reads each latest usage event, and renders them together as a snapshot or continuously refreshing terminal UI. A session is labeled active when its file changed within the last 60 minutes; this is a filesystem activity heuristic, because the session format has no documented running-state flag. Use `--active-within` to tune it.
+New sessions appear as soon as their session metadata is written, even before their
+first token-usage event; unavailable context and quota fields are shown as blank.
 
 ```text
 ~/.codex/sessions/**/*.jsonl
@@ -153,15 +197,18 @@ The local Codex session-event format is not a documented stable API and may chan
 python3 -m unittest discover -s tests -v
 ```
 
-The test suite covers configuration preservation, multiline TOML replacement, JSONL parsing, malformed records, latest-session selection, rate-limit mapping, context calculation, and reset countdowns.
+The test suite covers configuration preservation, multiline TOML replacement,
+JSONL parsing, malformed records, multi-session discovery (including sessions
+without token events), project aggregation, activity detection, rate-limit
+mapping, context calculation, and reset countdowns.
 
 ## Roadmap
 
-- Per-project usage history and trends
+- [x] Per-project usage summaries
 - Burn-rate forecasting before quota exhaustion
 - macOS and Linux desktop notifications
-- Shell prompt and tmux integrations
-- Exporters for developer productivity dashboards
+- [x] Shell prompt and tmux status output
+- [x] JSON exporter for developer productivity dashboards
 
 ## License
 
