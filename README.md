@@ -22,6 +22,7 @@ Long-running agentic coding sessions make it easy to lose track of context press
 - **Multi-session observability** — monitor every recent Codex session in one view
 - **Quota intelligence** — remaining five-hour and weekly capacity at a glance
 - **Reset forecasting** — countdowns show when each window renews
+- **Burn-rate forecasting** — estimates quota consumption speed and warns when the current pace exhausts a window before reset
 - **Token analytics** — total, input, output, and cached token counters
 - **Developer-native UX** — snapshots, watch mode, colors, and JSON output
 - **Privacy by design** — local, read-only processing with no telemetry upload
@@ -84,6 +85,10 @@ Customize the refresh interval and low-quota alert:
 ```bash
 python3 codex_usage.py watch --interval 2 --alert-below 15
 ```
+
+After two usage observations in the same quota window, detailed views also show
+the observed burn rate and whether that pace is projected to exhaust the quota
+before it resets. Forecasts remain blank until enough comparable data exists.
 
 Both `show` and `watch` display the 10 newest sessions. Show every recorded
 session, or tune how recently a session must have changed to count as active.
@@ -205,7 +210,7 @@ mapping, context calculation, and reset countdowns.
 ## Roadmap
 
 - [x] Per-project usage summaries
-- Burn-rate forecasting before quota exhaustion
+- [x] Burn-rate forecasting before quota exhaustion
 - macOS and Linux desktop notifications
 - [x] Shell prompt and tmux status output
 - [x] JSON exporter for developer productivity dashboards

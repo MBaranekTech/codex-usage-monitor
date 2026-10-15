@@ -7,6 +7,7 @@ from codex_usage import (
     all_usages,
     compact_status,
     countdown,
+    forecast,
     latest_usage,
     project_summary,
     render_overview,
@@ -107,6 +108,41 @@ class UsageTests(unittest.TestCase):
 
     def test_countdown(self):
         self.assertEqual(countdown(10_000, now=1_000), "2h 30m")
+
+    def test_forecasts_quota_exhaustion_from_rate_snapshots(self):
+        self.write_records([
+            {
+                "timestamp": "2026-10-11T09:00:00Z",
+                "type": "event_msg",
+                "payload": {"type": "token_count", "info": {}, "rate_limits": {
+                    "primary": {"used_percent": 20, "window_minutes": 300, "resets_at": 1_791_730_000}
+                }},
+            },
+            {
+                "timestamp": "2026-10-11T10:00:00Z",
+                "type": "event_msg",
+                "payload": {"type": "token_count", "info": {}, "rate_limits": {
+                    "primary": {"used_percent": 40, "window_minutes": 300, "resets_at": 1_791_730_000}
+                }},
+            },
+        ])
+        window = usage_from_file(self.file).windows[0]
+        self.assertEqual(window.burn_rate_percent_per_hour, 20)
+        self.assertEqual(window.estimated_exhaustion_at, 1_791_723_600)
+        self.assertIn("20.0%/h", forecast(window, now=1_791_712_800))
+
+    def test_does_not_forecast_across_quota_resets(self):
+        self.write_records([
+            {"timestamp": "2026-10-11T09:00:00Z", "type": "event_msg", "payload": {
+                "type": "token_count", "info": {}, "rate_limits": {"primary": {
+                    "used_percent": 90, "window_minutes": 300, "resets_at": 100
+                }}}},
+            {"timestamp": "2026-10-11T10:00:00Z", "type": "event_msg", "payload": {
+                "type": "token_count", "info": {}, "rate_limits": {"primary": {
+                    "used_percent": 5, "window_minutes": 300, "resets_at": 200
+                }}}},
+        ])
+        self.assertIsNone(usage_from_file(self.file).windows[0].burn_rate_percent_per_hour)
 
     def test_lists_multiple_sessions_newest_first(self):
         self.write_records([

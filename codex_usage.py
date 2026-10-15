@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -19,6 +20,8 @@ class Window:
     used_percent: float
     window_minutes: int
     resets_at: int | None
+    burn_rate_percent_per_hour: float | None = None
+    estimated_exhaustion_at: int | None = None
 
     @property
     def remaining_percent(self) -> float:
@@ -69,11 +72,51 @@ def json_lines(path: Path) -> Iterable[dict[str, Any]]:
         return
 
 
+def timestamp_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def burn_rate(
+    samples: list[tuple[float, float, int | None]],
+) -> tuple[float | None, int | None]:
+    """Estimate percentage points/hour and exhaustion time for one quota window."""
+    if len(samples) < 2:
+        return None, None
+    latest_time, latest_used, latest_reset = samples[-1]
+    previous = next(
+        (
+            sample
+            for sample in samples
+            if sample[2] == latest_reset
+            and sample[0] < latest_time
+            and sample[1] <= latest_used
+        ),
+        None,
+    )
+    if previous is None:
+        return None, None
+    elapsed_hours = (latest_time - previous[0]) / 3600
+    rate = (latest_used - previous[1]) / elapsed_hours
+    if rate <= 0:
+        return None, None
+    exhaustion_at = int(latest_time + (100.0 - latest_used) / rate * 3600)
+    return rate, exhaustion_at
+
+
 def usage_from_file(path: Path) -> Usage | None:
     project = None
     latest: dict[str, Any] | None = None
     observed_at = ""
     saw_session = False
+    rate_samples: dict[str, list[tuple[float, float, int | None]]] = {
+        "primary": [],
+        "secondary": [],
+    }
     for record in json_lines(path):
         payload = record.get("payload", {})
         if record.get("type") == "session_meta":
@@ -83,6 +126,18 @@ def usage_from_file(path: Path) -> Usage | None:
         if record.get("type") == "event_msg" and payload.get("type") == "token_count":
             latest = payload
             observed_at = record.get("timestamp", observed_at)
+            observed_seconds = timestamp_seconds(record.get("timestamp"))
+            if observed_seconds is not None:
+                for key in rate_samples:
+                    value = (payload.get("rate_limits") or {}).get(key)
+                    if value:
+                        rate_samples[key].append(
+                            (
+                                observed_seconds,
+                                float(value.get("used_percent") or 0),
+                                value.get("resets_at"),
+                            )
+                        )
     if latest is None and not saw_session:
         return None
 
@@ -106,12 +161,15 @@ def usage_from_file(path: Path) -> Usage | None:
             continue
         minutes = int(value.get("window_minutes") or 0)
         label = "5h" if minutes == 300 else "week" if minutes == 10080 else f"{minutes}m"
+        rate, exhaustion_at = burn_rate(rate_samples[key])
         windows.append(
             Window(
                 label=label,
                 used_percent=float(value.get("used_percent") or 0),
                 window_minutes=minutes,
                 resets_at=value.get("resets_at"),
+                burn_rate_percent_per_hour=rate,
+                estimated_exhaustion_at=exhaustion_at,
             )
         )
     return Usage(
@@ -163,6 +221,15 @@ def countdown(timestamp: int | None, now: float | None = None) -> str:
     return f"{days}d {hours}h" if days else f"{hours}h {minutes:02d}m"
 
 
+def forecast(window: Window, now: float | None = None) -> str | None:
+    if window.burn_rate_percent_per_hour is None or window.estimated_exhaustion_at is None:
+        return None
+    rate = window.burn_rate_percent_per_hour
+    if window.resets_at and window.estimated_exhaustion_at >= window.resets_at:
+        return f"{rate:.1f}%/h · pace lasts to reset"
+    return f"{rate:.1f}%/h · exhausts in {countdown(window.estimated_exhaustion_at, now)}"
+
+
 def human_tokens(value: int) -> str:
     if value >= 1_000_000:
         return f"{value / 1_000_000:.1f}M"
@@ -180,9 +247,11 @@ def render(usage: Usage, ansi: bool = True) -> str:
             f"Context  {bar(remaining, ansi=ansi)} {usage.context_used_percent:5.1f}% used"
         )
     for window in usage.windows:
+        projection = forecast(window)
         lines.append(
             f"{window.label:<8} {bar(window.remaining_percent, ansi=ansi)} "
             f"{window.remaining_percent:5.1f}% left · resets {countdown(window.resets_at)}"
+            + (f" · {projection}" if projection else "")
         )
     lines.append(
         "Tokens   "
